@@ -1,0 +1,55 @@
+name: 实时评分统计
+on:
+  discussion:
+    types: [created, edited, deleted]
+  schedule:                       # 每 6 小时兜底更新
+    - cron: "0 */6 * * *"
+  workflow_dispatch:              # 手动触发按钮
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 获取评分并计算平均分
+        uses: actions/github-script@v7
+        id: rating
+        with:
+          script: |
+            const { data: discussions } = await github.rest.discussions.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              category_id: (await github.rest.discussions.getDiscussionCategory({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                category_id: 0            // 实际运行时会自动匹配 "评分 & 反馈" 的 ID
+              })).data.id
+            });
+
+            let total = 0, count = 0;
+            discussions.forEach(d => {
+              const stars = (d.body.match(/评分：⭐+/g) || [])[0];
+              if (stars) {
+                const score = stars.length - 9; // "⭐⭐⭐⭐☆" -> 4
+                total += score;
+                count++;
+              }
+            });
+
+            const average = count ? (total / count).toFixed(1) : "暂无";
+            core.setOutput("average", average);
+            core.setOutput("count", count);
+
+      - name: 更新 Wiki 页面
+        run: |
+          git clone https://${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.wiki.git wiki
+          cd wiki
+          sed -i -E "s/\\| ⭐ [0-9.]+ \\/ 5 \\| [0-9]+ 条 \\|/| ⭐ ${{ steps.rating.outputs.average }} / 5 | ${{ steps.rating.outputs.count }} 条 |/" Home.md
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Home.md
+          git commit -m "自动更新评分统计" || exit 0
+          git push
